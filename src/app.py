@@ -39,6 +39,13 @@ for i, name in enumerate(team_names):
         default_idx = i
         break
 
+# Disable typing in the selectbox — click to open only
+st.markdown("""
+<style>
+div[data-baseweb="select"] input { pointer-events: none; }
+</style>
+""", unsafe_allow_html=True)
+
 selected_team = st.selectbox("Select Team:", options=team_names, index=default_idx)
 
 # Auto-fetch on selection
