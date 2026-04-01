@@ -43,16 +43,22 @@ for i, name in enumerate(team_names):
 selected_team = st.selectbox("Select Team:", options=team_names, index=default_idx)
 
 # Prevent mobile keyboard from appearing on the team selector.
-# Sets inputmode="none" and readonly on the underlying input via JS,
-# since CSS alone does not suppress the soft keyboard on iOS/Android.
+# iOS ignores inputmode="none" on focusable inputs, so we immediately blur
+# the input on focus to dismiss the keyboard. The dropdown stays open because
+# its open/closed state is managed by React, not by input focus.
 components.html("""
 <script>
 (function() {
     const doc = window.parent.document;
     function patch() {
         doc.querySelectorAll('div[data-baseweb="select"] input').forEach(function(el) {
+            if (el._mobilePatch) return;
+            el._mobilePatch = true;
             el.setAttribute('inputmode', 'none');
             el.setAttribute('readonly', 'readonly');
+            el.addEventListener('focus', function() {
+                requestAnimationFrame(function() { el.blur(); });
+            });
         });
     }
     patch();
