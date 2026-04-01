@@ -3,6 +3,7 @@ import os
 sys.path.insert(0, os.path.dirname(__file__))
 
 import streamlit as st
+import streamlit.components.v1 as components
 import pandas as pd
 from data.fantrax_api import fetch_league_teams
 from data.milb_api import get_milb_stats
@@ -39,14 +40,26 @@ for i, name in enumerate(team_names):
         default_idx = i
         break
 
-# Disable typing in the selectbox — click to open only
-st.markdown("""
-<style>
-div[data-baseweb="select"] input { pointer-events: none; }
-</style>
-""", unsafe_allow_html=True)
-
 selected_team = st.selectbox("Select Team:", options=team_names, index=default_idx)
+
+# Prevent mobile keyboard from appearing on the team selector.
+# Sets inputmode="none" and readonly on the underlying input via JS,
+# since CSS alone does not suppress the soft keyboard on iOS/Android.
+components.html("""
+<script>
+(function() {
+    const doc = window.parent.document;
+    function patch() {
+        doc.querySelectorAll('div[data-baseweb="select"] input').forEach(function(el) {
+            el.setAttribute('inputmode', 'none');
+            el.setAttribute('readonly', 'readonly');
+        });
+    }
+    patch();
+    new MutationObserver(patch).observe(doc.body, { subtree: true, childList: true });
+})();
+</script>
+""", height=0)
 
 # Auto-fetch on selection
 prospects = teams_data[selected_team]
