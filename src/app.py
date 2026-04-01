@@ -3,7 +3,6 @@ import os
 sys.path.insert(0, os.path.dirname(__file__))
 
 import streamlit as st
-import streamlit.components.v1 as components
 import pandas as pd
 from data.fantrax_api import fetch_league_teams
 from data.milb_api import get_milb_stats
@@ -30,42 +29,20 @@ if not teams_data:
     st.error("No teams were found in the league.")
     st.stop()
 
-# Team Dropdown
+# Team selector — uses st.radio instead of st.selectbox so that no text
+# input is rendered. st.selectbox puts a focusable <input> on screen which
+# triggers the iOS soft keyboard; radio buttons are pure tap targets with
+# no keyboard involvement on any device.
 team_names = sorted(list(teams_data.keys()))
 
-# Default index logic if 'uncle ben's rice' exists
+# Default to "Uncle Ben's Rice" if it exists in the league, otherwise first team.
 default_idx = 0
 for i, name in enumerate(team_names):
     if 'uncle' in name.lower() and 'ben' in name.lower():
         default_idx = i
         break
 
-selected_team = st.selectbox("Select Team:", options=team_names, index=default_idx)
-
-# Prevent mobile keyboard from appearing on the team selector.
-# iOS ignores inputmode="none" on focusable inputs, so we immediately blur
-# the input on focus to dismiss the keyboard. The dropdown stays open because
-# its open/closed state is managed by React, not by input focus.
-components.html("""
-<script>
-(function() {
-    const doc = window.parent.document;
-    function patch() {
-        doc.querySelectorAll('div[data-baseweb="select"] input').forEach(function(el) {
-            if (el._mobilePatch) return;
-            el._mobilePatch = true;
-            el.setAttribute('inputmode', 'none');
-            el.setAttribute('readonly', 'readonly');
-            el.addEventListener('focus', function() {
-                requestAnimationFrame(function() { el.blur(); });
-            });
-        });
-    }
-    patch();
-    new MutationObserver(patch).observe(doc.body, { subtree: true, childList: true });
-})();
-</script>
-""", height=0)
+selected_team = st.radio("Select Team:", options=team_names, index=default_idx)
 
 # Auto-fetch on selection
 prospects = teams_data[selected_team]
@@ -73,7 +50,7 @@ prospects = teams_data[selected_team]
 if not prospects:
     st.warning(f"No players with 'prospect' status found on {selected_team}.")
     st.stop()
-    
+
 st.success(f"Found {len(prospects)} prospects on {selected_team}. Fetching MiLB Logs...")
 
 found_minors = False
@@ -81,11 +58,11 @@ found_minors = False
 for player_name in prospects:
     with st.spinner(f"Pulling MiLB stats for {player_name}..."):
         stats_df = get_milb_stats(player_name)
-        
+
         if stats_df is not None and not stats_df.empty:
             found_minors = True
             st.subheader(player_name)
             st.dataframe(stats_df, use_container_width=True, hide_index=True)
-            
+
 if not found_minors:
     st.info("No active MiLB game logs found for the prospects on this team.")
