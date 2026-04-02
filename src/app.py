@@ -65,9 +65,15 @@ if selected_team == WATCHLIST_LABEL:
         else:
             st.success(f"Found {len(watchlist)} players on your watch list. Fetching MiLB logs...")
             found_watchlist = False
-            for player_name in watchlist:
+            for entry in watchlist:
+                # Entries can be plain "Player Name" or "Player Name|mlb_id"
+                # to pin a specific player when name search returns the wrong one.
+                if "|" in entry:
+                    player_name, player_id = entry.split("|", 1)
+                else:
+                    player_name, player_id = entry, None
                 with st.spinner(f"Pulling MiLB stats for {player_name}..."):
-                    stats_df = get_milb_stats(player_name)
+                    stats_df = get_milb_stats(player_name, player_id=player_id)
                 if stats_df is not None and not stats_df.empty:
                     found_watchlist = True
                     st.subheader(player_name)

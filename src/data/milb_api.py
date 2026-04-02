@@ -140,8 +140,27 @@ def format_pitching_stats(splits, season_stat):
     })
     return pd.DataFrame(rows)
 
-def get_milb_stats(player_name: str) -> pd.DataFrame:
-    p_info = search_player(player_name)
+def get_milb_stats(player_name: str, player_id: str = None) -> pd.DataFrame:
+    """
+    Fetch MiLB game logs and season stats for a player.
+
+    player_id: optional MLB Stats API player ID. If provided, skips the name
+    search entirely — useful when two players share a name and the wrong one
+    is returned by the search endpoint.
+    """
+    if player_id:
+        # Fetch position directly to determine hitter vs pitcher
+        try:
+            url = f"https://statsapi.mlb.com/api/v1/people/{player_id}"
+            req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+            data = json.loads(urllib.request.urlopen(req).read())
+            pos_code = data['people'][0].get('primaryPosition', {}).get('code', '')
+            p_info = {'id': player_id, 'is_pitcher': pos_code == '1'}
+        except Exception as e:
+            print(f"Error fetching player {player_id}: {e}")
+            return None
+    else:
+        p_info = search_player(player_name)
     if not p_info:
         return None
         
