@@ -57,7 +57,7 @@ if selected_team == WATCHLIST_LABEL:
                 st.session_state["watchlist_unlocked"] = True
                 st.rerun()
             else:
-                st.error("Incorrect password.")
+                st.error("Nice try lol")
     else:
         watchlist = st.secrets.get("watchlist_players", [])
         if not watchlist:
