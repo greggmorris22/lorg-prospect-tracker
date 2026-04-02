@@ -33,7 +33,11 @@ if not teams_data:
 # input is rendered. st.selectbox puts a focusable <input> on screen which
 # triggers the iOS soft keyboard; radio buttons are pure tap targets with
 # no keyboard involvement on any device.
-team_names = sorted(list(teams_data.keys()))
+#
+# "Gregg's Watch List" is injected at the top as a first-class team option.
+# It prompts for a password before revealing any player names.
+WATCHLIST_LABEL = "Gregg's Watch List"
+team_names = [WATCHLIST_LABEL] + sorted(list(teams_data.keys()))
 
 # Default to "Uncle Ben's Rice" if it exists in the league, otherwise first team.
 default_idx = 0
@@ -44,34 +48,10 @@ for i, name in enumerate(team_names):
 
 selected_team = st.radio("Select Team:", options=team_names, index=default_idx)
 
-# Auto-fetch on selection
-prospects = teams_data[selected_team]
-
-if not prospects:
-    st.warning(f"No players with 'prospect' status found on {selected_team}.")
-    st.stop()
-
-st.success(f"Found {len(prospects)} prospects on {selected_team}. Fetching MiLB Logs...")
-
-found_minors = False
-
-for player_name in prospects:
-    with st.spinner(f"Pulling MiLB stats for {player_name}..."):
-        stats_df = get_milb_stats(player_name)
-
-        if stats_df is not None and not stats_df.empty:
-            found_minors = True
-            st.subheader(player_name)
-            st.dataframe(stats_df, use_container_width=True, hide_index=True)
-
-if not found_minors:
-    st.info("No active MiLB game logs found for the prospects on this team.")
-
-# --- Watchlist (private) ---
-st.divider()
-with st.expander("Watchlist"):
+# --- Gregg's Watch List (password-protected) ---
+if selected_team == WATCHLIST_LABEL:
     if not st.session_state.get("watchlist_unlocked"):
-        pwd = st.text_input("Password", type="password", key="watchlist_pwd")
+        pwd = st.text_input("Enter password to view watch list:", type="password", key="watchlist_pwd")
         if pwd:
             if pwd == st.secrets.get("watchlist_password", ""):
                 st.session_state["watchlist_unlocked"] = True
@@ -81,9 +61,9 @@ with st.expander("Watchlist"):
     else:
         watchlist = st.secrets.get("watchlist_players", [])
         if not watchlist:
-            st.info("No players on your watchlist yet.")
+            st.info("No players on your watch list yet.")
         else:
-            st.success(f"{len(watchlist)} players on your watchlist. Fetching MiLB logs...")
+            st.success(f"Found {len(watchlist)} players on your watch list. Fetching MiLB logs...")
             found_watchlist = False
             for player_name in watchlist:
                 with st.spinner(f"Pulling MiLB stats for {player_name}..."):
@@ -93,4 +73,28 @@ with st.expander("Watchlist"):
                     st.subheader(player_name)
                     st.dataframe(stats_df, use_container_width=True, hide_index=True)
             if not found_watchlist:
-                st.info("No active MiLB game logs found for your watchlist players.")
+                st.info("No active MiLB game logs found for your watch list players.")
+
+# --- Regular team view ---
+else:
+    prospects = teams_data[selected_team]
+
+    if not prospects:
+        st.warning(f"No players with 'prospect' status found on {selected_team}.")
+        st.stop()
+
+    st.success(f"Found {len(prospects)} prospects on {selected_team}. Fetching MiLB Logs...")
+
+    found_minors = False
+
+    for player_name in prospects:
+        with st.spinner(f"Pulling MiLB stats for {player_name}..."):
+            stats_df = get_milb_stats(player_name)
+
+        if stats_df is not None and not stats_df.empty:
+            found_minors = True
+            st.subheader(player_name)
+            st.dataframe(stats_df, use_container_width=True, hide_index=True)
+
+    if not found_minors:
+        st.info("No active MiLB game logs found for the prospects on this team.")
