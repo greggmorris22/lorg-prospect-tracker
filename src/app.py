@@ -18,6 +18,17 @@ def load_teams(league_id):
 
 league_id = "eofqrg7umiyswern"
 
+# Column config shared by all stat tables. Renders the Date column as a
+# clickable link to the Baseball Savant gamefeed. The URL has the short date
+# embedded as &d=MM-DD so the regex can extract it for display. The Season
+# aggregate row has an empty URL and renders as a blank cell.
+STAT_COLUMN_CONFIG = {
+    "Date": st.column_config.LinkColumn(
+        "Date",
+        display_text=r"d=(\d{2}-\d{2})"
+    )
+}
+
 with st.spinner("Loading league teams..."):
     try:
         teams_data = load_teams(league_id)
@@ -77,7 +88,7 @@ if selected_team == WATCHLIST_LABEL:
                 if stats_df is not None and not stats_df.empty:
                     found_watchlist = True
                     st.subheader(player_name)
-                    st.dataframe(stats_df, use_container_width=True, hide_index=True)
+                    st.dataframe(stats_df, use_container_width=True, hide_index=True, column_config=STAT_COLUMN_CONFIG)
             if not found_watchlist:
                 st.info("No active MiLB game logs found for your watch list players.")
 
@@ -100,7 +111,7 @@ else:
         if stats_df is not None and not stats_df.empty:
             found_minors = True
             st.subheader(player_name)
-            st.dataframe(stats_df, use_container_width=True, hide_index=True)
+            st.dataframe(stats_df, use_container_width=True, hide_index=True, column_config=STAT_COLUMN_CONFIG)
 
     if not found_minors:
         st.info("No active MiLB game logs found for the prospects on this team.")
