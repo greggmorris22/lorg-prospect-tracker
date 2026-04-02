@@ -37,7 +37,7 @@ if not teams_data:
 # "Gregg's Watch List" is injected at the top as a first-class team option.
 # It prompts for a password before revealing any player names.
 WATCHLIST_LABEL = "Gregg's Watch List"
-team_names = [WATCHLIST_LABEL] + sorted(list(teams_data.keys()))
+team_names = sorted(list(teams_data.keys())) + [WATCHLIST_LABEL]
 
 # Default to "Uncle Ben's Rice" if it exists in the league, otherwise first team.
 default_idx = 0
