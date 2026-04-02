@@ -19,3 +19,7 @@ venv.bak/
 # IDEs
 .vscode/
 .idea/
+
+# Streamlit secrets (never commit — set these in Streamlit Cloud dashboard)
+.streamlit/secrets.toml
+src/.streamlit/secrets.toml

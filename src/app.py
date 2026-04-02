@@ -66,3 +66,31 @@ for player_name in prospects:
 
 if not found_minors:
     st.info("No active MiLB game logs found for the prospects on this team.")
+
+# --- Watchlist (private) ---
+st.divider()
+with st.expander("Watchlist"):
+    if not st.session_state.get("watchlist_unlocked"):
+        pwd = st.text_input("Password", type="password", key="watchlist_pwd")
+        if pwd:
+            if pwd == st.secrets.get("watchlist_password", ""):
+                st.session_state["watchlist_unlocked"] = True
+                st.rerun()
+            else:
+                st.error("Incorrect password.")
+    else:
+        watchlist = st.secrets.get("watchlist_players", [])
+        if not watchlist:
+            st.info("No players on your watchlist yet.")
+        else:
+            st.success(f"{len(watchlist)} players on your watchlist. Fetching MiLB logs...")
+            found_watchlist = False
+            for player_name in watchlist:
+                with st.spinner(f"Pulling MiLB stats for {player_name}..."):
+                    stats_df = get_milb_stats(player_name)
+                if stats_df is not None and not stats_df.empty:
+                    found_watchlist = True
+                    st.subheader(player_name)
+                    st.dataframe(stats_df, use_container_width=True, hide_index=True)
+            if not found_watchlist:
+                st.info("No active MiLB game logs found for your watchlist players.")
