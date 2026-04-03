@@ -18,6 +18,13 @@ def load_teams(league_id):
 
 league_id = "eofqrg7umiyswern"
 
+# Player ID overrides: maps a player's display name to a specific MLB Stats API
+# player ID. Used when the name search returns the wrong player (e.g. two active
+# players share the same name). Set in Streamlit secrets as:
+#   [player_id_overrides]
+#   "Esteban Mejia" = "821757"
+PLAYER_ID_OVERRIDES = st.secrets.get("player_id_overrides", {})
+
 # Column config shared by all stat tables. Renders the Date column as a
 # clickable link to the Baseball Savant gamefeed. The URL has the short date
 # embedded as &d=MM-DD so the regex can extract it for display. The Season
@@ -105,8 +112,9 @@ else:
     found_minors = False
 
     for player_name in prospects:
+        override_id = PLAYER_ID_OVERRIDES.get(player_name)
         with st.spinner(f"Pulling MiLB stats for {player_name}..."):
-            stats_df = get_milb_stats(player_name)
+            stats_df = get_milb_stats(player_name, player_id=override_id)
 
         if stats_df is not None and not stats_df.empty:
             found_minors = True
