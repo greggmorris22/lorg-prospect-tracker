@@ -86,10 +86,13 @@ if selected_team == WATCHLIST_LABEL:
             for entry in watchlist:
                 # Entries can be plain "Player Name" or "Player Name|mlb_id"
                 # to pin a specific player when name search returns the wrong one.
+                # Also checks player_id_overrides as a fallback so names listed
+                # there don't need the "|id" suffix in the watchlist too.
                 if "|" in entry:
                     player_name, player_id = entry.split("|", 1)
                 else:
-                    player_name, player_id = entry, None
+                    player_name = entry
+                    player_id = PLAYER_ID_OVERRIDES.get(player_name)
                 with st.spinner(f"Pulling MiLB stats for {player_name}..."):
                     stats_df = get_milb_stats(player_name, player_id=player_id)
                 if stats_df is not None and not stats_df.empty:
