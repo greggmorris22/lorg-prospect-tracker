@@ -72,13 +72,13 @@ def render_player(player_name: str, result: tuple):
     Render one player's stat block: header line, 2026 Stats table,
     Recent Games table, and a divider.
 
-    result is the 5-tuple returned by get_milb_stats:
-        (season_df, games_df, team, age, position)
+    result is the 6-tuple returned by get_milb_stats:
+        (season_df, games_df, current_level, team, age, position)
     """
-    season_df, games_df, team, age, position = result
+    season_df, games_df, current_level, team, age, position = result
 
-    st.subheader(player_name)
-    st.caption(f"{position}  |  {team}  |  Age {age}")
+    st.subheader(f"{player_name} - {current_level}")
+    st.caption(f"{position} - {team} - {age}")
 
     st.markdown("**2026 Stats**")
     st.dataframe(season_df, use_container_width=True, hide_index=True)

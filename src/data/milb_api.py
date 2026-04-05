@@ -3,7 +3,7 @@ MLB Stats API helpers for fetching MiLB game logs and season stats.
 
 Each public function returns separate season-totals and recent-games
 DataFrames so the app can display them in distinct labeled sections,
-along with player profile info (team, age, position).
+along with player profile info (current level, team, age, position).
 """
 
 import urllib.request
@@ -20,7 +20,7 @@ def search_player(player_name: str) -> dict:
     Returns a dict with keys:
         id         -- MLB Stats API player ID (string)
         is_pitcher -- True if the player's primary position is pitcher
-        team       -- current team abbreviation (or 'UNK')
+        team       -- current team full name (or 'UNK')
         age        -- current age (int or 'UNK')
         position   -- primary position abbreviation (C, 1B, SS, P, etc.)
 
@@ -39,7 +39,7 @@ def search_player(player_name: str) -> dict:
             return {
                 'id':         str(p['id']),
                 'is_pitcher': p.get('primaryPosition', {}).get('code') == '1',
-                'team':       p.get('currentTeam', {}).get('abbreviation', 'UNK'),
+                'team':       p.get('currentTeam', {}).get('name', 'UNK'),
                 'age':        p.get('currentAge', 'UNK'),
                 'position':   p.get('primaryPosition', {}).get('abbreviation', 'UNK'),
             }
@@ -56,6 +56,61 @@ def fetch_stats(url: str):
         return json.loads(resp.read())
     except Exception:
         return None
+
+
+def fetch_game_scores(pk_home_map: dict) -> dict:
+    """
+    Batch-fetch final scores for a set of gamePks in a single API call.
+
+    pk_home_map: dict mapping gamePk (int) -> is_home (bool), indicating
+    whether the player's team was the home team in each game.
+
+    Returns a dict mapping gamePk -> score string, e.g.:
+        {717949: "W 4-2", 717950: "L 3-5", 717951: "2-2"}
+
+    Games that are in progress or postponed get a score without a W/L prefix.
+    Games whose data is unavailable get an empty string.
+    """
+    if not pk_home_map:
+        return {}
+
+    pks_str = ",".join(str(pk) for pk in pk_home_map)
+    url = f"https://statsapi.mlb.com/api/v1/schedule?gamePks={pks_str}"
+    data = fetch_stats(url)
+
+    scores = {}
+    if not data:
+        return scores
+
+    for date_entry in data.get('dates', []):
+        for game in date_entry.get('games', []):
+            pk = game.get('gamePk')
+            if pk not in pk_home_map:
+                continue
+
+            home = game.get('teams', {}).get('home', {})
+            away = game.get('teams', {}).get('away', {})
+            home_score = home.get('score')
+            away_score = away.get('score')
+
+            if home_score is None or away_score is None:
+                scores[pk] = ""
+                continue
+
+            is_home = pk_home_map[pk]
+            team_score = home_score if is_home else away_score
+            opp_score  = away_score if is_home else home_score
+
+            game_state = game.get('status', {}).get('abstractGameState', '')
+            if game_state == 'Final':
+                is_winner = home.get('isWinner', False) if is_home else away.get('isWinner', False)
+                prefix = "W " if is_winner else "L "
+            else:
+                prefix = ""  # In-progress or not yet final — no W/L
+
+            scores[pk] = f"{prefix}{team_score}-{opp_score}"
+
+    return scores
 
 
 def _savant_url(game_pk: int, date_short: str) -> str:
@@ -81,16 +136,19 @@ def _team_abbrev(team_obj: dict) -> str:
     return overrides.get(abbrev, abbrev)
 
 
-def format_hitting_stats(splits: list, season_stat: dict) -> tuple:
+def format_hitting_stats(splits: list, season_stat: dict, scores: dict = None) -> tuple:
     """
     Format hitting data into two separate DataFrames.
+
+    scores: optional dict of {gamePk: score_string} from fetch_game_scores().
+    If provided, a Score column is included in games_df.
 
     Returns:
         season_df  -- one-row DataFrame of 2026 season totals
                       (GP, AB, R, H, 2B, 3B, HR, RBI, BB, SO, SB, CS,
                        AVG, OBP, SLG, OPS)
         games_df   -- DataFrame of the 7 most recent games in chronological
-                      order (Date linked to Savant, Team, Opp, Result, and
+                      order (Date linked to Savant, Team, Opp, Score, and
                       per-game slash-line stats)
     """
     splits.sort(key=lambda x: x['date'], reverse=True)
@@ -105,32 +163,31 @@ def format_hitting_stats(splits: list, season_stat: dict) -> tuple:
         date_short = game.get('date', '')[5:]  # "YYYY-MM-DD" -> "MM-DD"
         game_pk = game.get('game', {}).get('gamePk')
 
-        # isWin reflects whether the player's team won that game
-        is_win = game.get('isWin')
-        result = "W" if is_win is True else ("L" if is_win is False else "")
-
         home_away = "vs" if game.get('isHome') else "@"
         date_value = _savant_url(game_pk, date_short) if game_pk else date_short
 
+        # Look up the final score from the pre-fetched scores dict
+        score_str = (scores.get(game_pk, "") if scores and game_pk else "")
+
         rows.append({
-            "Date":   date_value,
-            "Team":   t,
-            "Opp":    f"{home_away} {o}",
-            "Result": result,
-            "AB":     s.get('atBats', 0),
-            "R":      s.get('runs', 0),
-            "H":      s.get('hits', 0),
-            "2B":     s.get('doubles', 0),
-            "3B":     s.get('triples', 0),
-            "HR":     s.get('homeRuns', 0),
-            "RBI":    s.get('rbi', 0),
-            "BB":     s.get('baseOnBalls', 0),
-            "SO":     s.get('strikeOuts', 0),
-            "SB":     s.get('stolenBases', 0),
-            "CS":     s.get('caughtStealing', 0),
-            "AVG":    s.get('avg', '.000'),
-            "OBP":    s.get('obp', '.000'),
-            "SLG":    s.get('slg', '.000'),
+            "Date":  date_value,
+            "Team":  t,
+            "Opp":   f"{home_away} {o}",
+            "Score": score_str,
+            "AB":    s.get('atBats', 0),
+            "R":     s.get('runs', 0),
+            "H":     s.get('hits', 0),
+            "2B":    s.get('doubles', 0),
+            "3B":    s.get('triples', 0),
+            "HR":    s.get('homeRuns', 0),
+            "RBI":   s.get('rbi', 0),
+            "BB":    s.get('baseOnBalls', 0),
+            "SO":    s.get('strikeOuts', 0),
+            "SB":    s.get('stolenBases', 0),
+            "CS":    s.get('caughtStealing', 0),
+            "AVG":   s.get('avg', '.000'),
+            "OBP":   s.get('obp', '.000'),
+            "SLG":   s.get('slg', '.000'),
         })
 
     games_df = pd.DataFrame(rows)
@@ -168,14 +225,20 @@ def format_hitting_stats(splits: list, season_stat: dict) -> tuple:
     return season_df, games_df
 
 
-def format_pitching_stats(splits: list, season_stat: dict) -> tuple:
+def format_pitching_stats(splits: list, season_stat: dict, scores: dict = None) -> tuple:
     """
     Format pitching data into two separate DataFrames.
 
+    scores: optional dict of {gamePk: score_string} from fetch_game_scores().
+
     Returns:
         season_df  -- one-row DataFrame of 2026 season totals
+                      (GP, GS, W, L, SV, HLD, IP, H, R, ER, BB, K,
+                       ERA, WHIP, BAA, QS)
         games_df   -- DataFrame of the 7 most recent appearances in
                       chronological order
+                      (Date, Team, Opp, Score, GS, W, L, SV, BS, HLD,
+                       IP, H, R, ER, HR, BB, K, PIT, BAA, ERA)
     """
     splits.sort(key=lambda x: x['date'], reverse=True)
     recent_7 = splits[:7]
@@ -189,49 +252,53 @@ def format_pitching_stats(splits: list, season_stat: dict) -> tuple:
         date_short = game.get('date', '')[5:]
         game_pk = game.get('game', {}).get('gamePk')
 
-        is_win = game.get('isWin')
-        result = "W" if is_win is True else ("L" if is_win is False else "")
-
         home_away = "vs" if game.get('isHome') else "@"
         date_value = _savant_url(game_pk, date_short) if game_pk else date_short
+        score_str  = (scores.get(game_pk, "") if scores and game_pk else "")
 
         rows.append({
-            "Date":   date_value,
-            "Team":   t,
-            "Opp":    f"{home_away} {o}",
-            "Result": result,
-            "W":      s.get('wins', 0),
-            "L":      s.get('losses', 0),
-            "IP":     s.get('inningsPitched', '0.0'),
-            "H":      s.get('hits', 0),
-            "R":      s.get('runs', 0),
-            "ER":     s.get('earnedRuns', 0),
-            "HR":     s.get('homeRuns', 0),
-            "BB":     s.get('baseOnBalls', 0),
-            "SO":     s.get('strikeOuts', 0),
-            "NP-S":   f"{s.get('numberOfPitches', 0)}-{s.get('strikes', 0)}",
-            "ERA":    s.get('era', '0.00'),
-            "WHIP":   s.get('whip', '0.00'),
+            "Date":  date_value,
+            "Team":  t,
+            "Opp":   f"{home_away} {o}",
+            "Score": score_str,
+            "GS":    s.get('gamesStarted', 0),
+            "W":     s.get('wins', 0),
+            "L":     s.get('losses', 0),
+            "SV":    s.get('saves', 0),
+            "BS":    s.get('blownSaves', 0),
+            "HLD":   s.get('holds', 0),
+            "IP":    s.get('inningsPitched', '0.0'),
+            "H":     s.get('hits', 0),
+            "R":     s.get('runs', 0),
+            "ER":    s.get('earnedRuns', 0),
+            "HR":    s.get('homeRuns', 0),
+            "BB":    s.get('baseOnBalls', 0),
+            "K":     s.get('strikeOuts', 0),
+            "PIT":   s.get('numberOfPitches', 0),
+            "BAA":   s.get('avg', '.000'),
+            "ERA":   s.get('era', '0.00'),
         })
 
     games_df = pd.DataFrame(rows)
 
     s = season_stat if season_stat else {}
     season_df = pd.DataFrame([{
-        "G":    s.get('gamesPlayed', 0),
+        "GP":   s.get('gamesPlayed', 0),
         "GS":   s.get('gamesStarted', 0),
         "W":    s.get('wins', 0),
         "L":    s.get('losses', 0),
         "SV":   s.get('saves', 0),
-        "ERA":  s.get('era', '0.00'),
+        "HLD":  s.get('holds', 0),
         "IP":   s.get('inningsPitched', '0.0'),
         "H":    s.get('hits', 0),
         "R":    s.get('runs', 0),
         "ER":   s.get('earnedRuns', 0),
-        "HR":   s.get('homeRuns', 0),
         "BB":   s.get('baseOnBalls', 0),
-        "SO":   s.get('strikeOuts', 0),
+        "K":    s.get('strikeOuts', 0),
+        "ERA":  s.get('era', '0.00'),
         "WHIP": s.get('whip', '0.00'),
+        "BAA":  s.get('avg', '.000'),
+        "QS":   s.get('qualityStarts', 0),
     }])
 
     return season_df, games_df
@@ -245,20 +312,22 @@ def get_milb_stats(player_name: str, player_id: str = None) -> tuple:
     search entirely — useful when two players share a name and the wrong one
     is returned by the search endpoint.
 
-    Returns a 5-tuple:
-        (season_df, games_df, team_abbrev, age, position)
+    Returns a 6-tuple:
+        (season_df, games_df, current_level, team, age, position)
 
     Where:
-        season_df   -- one-row season-totals DataFrame
-        games_df    -- recent-games DataFrame
-        team_abbrev -- player's current team abbreviation
-        age         -- player's current age
-        position    -- player's primary position abbreviation
+        season_df     -- one-row season-totals DataFrame
+        games_df      -- recent-games DataFrame
+        current_level -- sport abbreviation of the player's most recent game
+                         (e.g., "AAA", "AA", "A+", "A", "Rk")
+        team          -- player's current team full name
+        age           -- player's current age
+        position      -- player's primary position abbreviation
 
     Returns None if the player cannot be found or has no 2026 stats.
     """
     if player_id:
-        # Fetch full profile to determine position and get team/age info
+        # Fetch full profile to determine position and collect team/age info
         try:
             url = f"https://statsapi.mlb.com/api/v1/people/{player_id}"
             req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
@@ -268,7 +337,7 @@ def get_milb_stats(player_name: str, player_id: str = None) -> tuple:
             p_info = {
                 'id':         player_id,
                 'is_pitcher': pos_code == '1',
-                'team':       person.get('currentTeam', {}).get('abbreviation', 'UNK'),
+                'team':       person.get('currentTeam', {}).get('name', 'UNK'),
                 'age':        person.get('currentAge', 'UNK'),
                 'position':   person.get('primaryPosition', {}).get('abbreviation', 'UNK'),
             }
@@ -322,9 +391,24 @@ def get_milb_stats(player_name: str, player_id: str = None) -> tuple:
     if not all_splits:
         return None
 
-    if p_info['is_pitcher']:
-        season_df, games_df = format_pitching_stats(all_splits, best_season_stat)
-    else:
-        season_df, games_df = format_hitting_stats(all_splits, best_season_stat)
+    # Determine the player's current level from their most recent game.
+    # Do this before the format functions sort the list.
+    all_splits.sort(key=lambda x: x['date'], reverse=True)
+    current_level = all_splits[0].get('sport', {}).get('abbreviation', 'UNK')
 
-    return season_df, games_df, team, age, position
+    # Build a gamePk -> isHome map for all unique games, then batch-fetch
+    # the final scores in a single schedule API call.
+    pk_home_map = {}
+    for split in all_splits:
+        pk = split.get('game', {}).get('gamePk')
+        if pk:
+            pk_home_map[pk] = split.get('isHome', False)
+
+    scores = fetch_game_scores(pk_home_map)
+
+    if p_info['is_pitcher']:
+        season_df, games_df = format_pitching_stats(all_splits, best_season_stat, scores)
+    else:
+        season_df, games_df = format_hitting_stats(all_splits, best_season_stat, scores)
+
+    return season_df, games_df, current_level, team, age, position
