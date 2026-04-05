@@ -41,7 +41,7 @@ def search_player(player_name: str) -> dict:
                 'is_pitcher': p.get('primaryPosition', {}).get('code') == '1',
                 'team':       p.get('currentTeam', {}).get('name', 'UNK'),
                 'age':        p.get('currentAge', 'UNK'),
-                'position':   p.get('primaryPosition', {}).get('abbreviation', 'UNK'),
+                'position':   normalize_position(p.get('primaryPosition', {}).get('abbreviation', 'UNK')),
             }
     except Exception as e:
         print(f"Error searching for {player_name}: {e}")
@@ -56,6 +56,14 @@ def fetch_stats(url: str):
         return json.loads(resp.read())
     except Exception:
         return None
+
+
+def normalize_position(pos: str) -> str:
+    """
+    Collapse all outfield sub-positions into a single 'OF' label.
+    LF, CF, and RF are all returned as 'OF'; all other positions are unchanged.
+    """
+    return 'OF' if pos in {'LF', 'CF', 'RF'} else pos
 
 
 def fetch_parent_org(team_id: int) -> str:
@@ -358,7 +366,7 @@ def get_milb_stats(player_name: str, player_id: str = None) -> tuple:
                 'is_pitcher': pos_code == '1',
                 'team':       person.get('currentTeam', {}).get('name', 'UNK'),
                 'age':        person.get('currentAge', 'UNK'),
-                'position':   person.get('primaryPosition', {}).get('abbreviation', 'UNK'),
+                'position':   normalize_position(person.get('primaryPosition', {}).get('abbreviation', 'UNK')),
             }
         except Exception as e:
             print(f"Error fetching player {player_id}: {e}")
