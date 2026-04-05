@@ -3,6 +3,7 @@ import os
 sys.path.insert(0, os.path.dirname(__file__))
 
 import streamlit as st
+import concurrent.futures
 import pandas as pd
 from data.fantrax_api import fetch_league_teams
 from data.milb_api import get_milb_stats
@@ -52,7 +53,7 @@ if not teams_data:
 # triggers the iOS soft keyboard; radio buttons are pure tap targets with
 # no keyboard involvement on any device.
 #
-# "Gregg's Watch List" is injected at the top as a first-class team option.
+# "Gregg's Watch List" is injected at the end as a first-class team option.
 # It prompts for a password before revealing any player names.
 WATCHLIST_LABEL = "Gregg's Watch List"
 team_names = sorted(list(teams_data.keys())) + [WATCHLIST_LABEL]
@@ -81,24 +82,32 @@ if selected_team == WATCHLIST_LABEL:
         if not watchlist:
             st.info("No players on your watch list yet.")
         else:
-            st.success(f"Found {len(watchlist)} players on your watch list. Fetching MiLB logs...")
-            found_watchlist = False
-            for entry in watchlist:
-                # Entries can be plain "Player Name" or "Player Name|mlb_id"
-                # to pin a specific player when name search returns the wrong one.
-                # Also checks player_id_overrides as a fallback so names listed
-                # there don't need the "|id" suffix in the watchlist too.
+            def fetch_watchlist_player(entry):
                 if "|" in entry:
                     player_name, player_id = entry.split("|", 1)
                 else:
                     player_name = entry
                     player_id = PLAYER_ID_OVERRIDES.get(player_name)
-                with st.spinner(f"Pulling MiLB stats for {player_name}..."):
-                    stats_df = get_milb_stats(player_name, player_id=player_id)
+                stats_df = get_milb_stats(player_name, player_id=player_id)
+                return player_name, stats_df
+
+            with st.spinner("Fetching watch list stats..."):
+                with concurrent.futures.ThreadPoolExecutor(max_workers=20) as executor:
+                    futures = [executor.submit(fetch_watchlist_player, e) for e in watchlist]
+                    wl_results = [f.result() for f in concurrent.futures.as_completed(futures)]
+
+            # Preserve original watchlist order
+            wl_map = {name: df for name, df in wl_results}
+            found_watchlist = False
+            for entry in watchlist:
+                player_name = entry.split("|")[0] if "|" in entry else entry
+                stats_df = wl_map.get(player_name)
                 if stats_df is not None and not stats_df.empty:
                     found_watchlist = True
                     st.subheader(player_name)
                     st.dataframe(stats_df, use_container_width=True, hide_index=True, column_config=STAT_COLUMN_CONFIG)
+
+            st.success(f"Found {len(watchlist)} players on your watch list.")
             if not found_watchlist:
                 st.info("No active MiLB game logs found for your watch list players.")
 
@@ -110,15 +119,24 @@ else:
         st.warning(f"No players with 'prospect' status found on {selected_team}.")
         st.stop()
 
-    st.success(f"Found {len(prospects)} prospects on {selected_team}. Fetching MiLB Logs...")
+    def fetch_prospect(player_name):
+        override_id = PLAYER_ID_OVERRIDES.get(player_name)
+        stats_df = get_milb_stats(player_name, player_id=override_id)
+        return player_name, stats_df
 
+    with st.spinner(f"Fetching MiLB stats for {selected_team}..."):
+        with concurrent.futures.ThreadPoolExecutor(max_workers=20) as executor:
+            futures = [executor.submit(fetch_prospect, name) for name in prospects]
+            team_results = [f.result() for f in concurrent.futures.as_completed(futures)]
+
+    # Preserve original sorted order from fantrax_api
+    results_map = {name: df for name, df in team_results}
     found_minors = False
 
-    for player_name in prospects:
-        override_id = PLAYER_ID_OVERRIDES.get(player_name)
-        with st.spinner(f"Pulling MiLB stats for {player_name}..."):
-            stats_df = get_milb_stats(player_name, player_id=override_id)
+    st.success(f"Found {len(prospects)} prospects on {selected_team}.")
 
+    for player_name in prospects:
+        stats_df = results_map.get(player_name)
         if stats_df is not None and not stats_df.empty:
             found_minors = True
             st.subheader(player_name)
