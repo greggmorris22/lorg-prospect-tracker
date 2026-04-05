@@ -58,6 +58,27 @@ def fetch_stats(url: str):
         return None
 
 
+def fetch_parent_org(team_id: int) -> str:
+    """
+    Look up the MLB parent organization name for a minor league team.
+
+    Minor league teams in the Stats API carry a parentOrgName field that
+    holds the MLB affiliate name (e.g., "Milwaukee Brewers" for Biloxi
+    Shuckers). For an MLB team itself, this field is absent and the team's
+    own name is returned instead.
+
+    Returns the parent org name string, or 'UNK' on any error.
+    """
+    if not team_id:
+        return 'UNK'
+    url = f"https://statsapi.mlb.com/api/v1/teams/{team_id}"
+    data = fetch_stats(url)
+    if data and data.get('teams'):
+        t = data['teams'][0]
+        return t.get('parentOrgName') or t.get('name', 'UNK')
+    return 'UNK'
+
+
 def fetch_game_scores(pk_home_map: dict) -> dict:
     """
     Batch-fetch final scores for a set of gamePks in a single API call.
@@ -152,8 +173,7 @@ def format_hitting_stats(splits: list, season_stat: dict, scores: dict = None) -
                       per-game slash-line stats)
     """
     splits.sort(key=lambda x: x['date'], reverse=True)
-    recent_7 = splits[:7]
-    recent_7.reverse()  # chronological for display
+    recent_7 = splits[:7]  # newest first — most recent game at the top
 
     rows = []
     for game in recent_7:
@@ -241,8 +261,7 @@ def format_pitching_stats(splits: list, season_stat: dict, scores: dict = None) 
                        IP, H, R, ER, HR, BB, K, PIT, BAA, ERA)
     """
     splits.sort(key=lambda x: x['date'], reverse=True)
-    recent_7 = splits[:7]
-    recent_7.reverse()
+    recent_7 = splits[:7]  # newest first — most recent game at the top
 
     rows = []
     for game in recent_7:
@@ -391,20 +410,26 @@ def get_milb_stats(player_name: str, player_id: str = None) -> tuple:
     if not all_splits:
         return None
 
-    # Determine the player's current level from their most recent game.
+    # Determine the player's current level and team from their most recent game.
     # Do this before the format functions sort the list.
     all_splits.sort(key=lambda x: x['date'], reverse=True)
     current_level = all_splits[0].get('sport', {}).get('abbreviation', 'UNK')
+    current_team_id = all_splits[0].get('team', {}).get('id')
 
-    # Build a gamePk -> isHome map for all unique games, then batch-fetch
-    # the final scores in a single schedule API call.
+    # Build a gamePk -> isHome map for all unique games.
     pk_home_map = {}
     for split in all_splits:
         pk = split.get('game', {}).get('gamePk')
         if pk:
             pk_home_map[pk] = split.get('isHome', False)
 
-    scores = fetch_game_scores(pk_home_map)
+    # Fetch game scores and MLB parent org in parallel — two API calls,
+    # run concurrently so neither has to wait on the other.
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+        scores_future  = executor.submit(fetch_game_scores, pk_home_map)
+        org_future     = executor.submit(fetch_parent_org, current_team_id)
+        scores = scores_future.result()
+        team   = org_future.result()  # replaces whatever the profile returned
 
     if p_info['is_pitcher']:
         season_df, games_df = format_pitching_stats(all_splits, best_season_stat, scores)

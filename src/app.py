@@ -78,7 +78,7 @@ def render_player(player_name: str, result: tuple):
     season_df, games_df, current_level, team, age, position = result
 
     st.subheader(f"{player_name} - {current_level}")
-    st.caption(f"{position} - {team} - {age}")
+    st.caption(f"{position} - {team} - Age {age}")
 
     st.markdown("**2026 Stats**")
     st.dataframe(season_df, use_container_width=True, hide_index=True)
