@@ -13,6 +13,16 @@ POSITION_ORDER = {"C": 0, "1B": 1, "2B": 2, "3B": 3, "SS": 4, "OF": 5, "SP": 6, 
 # Sort order for minor league levels: closest to majors first.
 LEVEL_ORDER = {"AAA": 0, "AA": 1, "HIGH_A": 2, "LOW_A": 3, "ROOKIE_BALL": 4}
 
+# Manual roster additions. Use when the HarryKnowsBall proxy feed is missing a
+# player who is on a Fantrax roster. Keyed by exact Fantrax team name as it
+# appears in the upstream feed. These are appended to the matching team's
+# prospect list before sorting.
+MANUAL_PROSPECTS = {
+    "Uncle Ben's Rice \U0001f33e": [
+        {"name": "Ronny Cruz", "pos": "SS", "level": "LOW_A"},
+    ],
+}
+
 
 def _primary_position(positions: list) -> str:
     """
@@ -73,6 +83,10 @@ def fetch_league_teams(league_id: str) -> dict:
                         'pos': primary_pos,
                         'level': level,
                     })
+
+            # Append any manual additions for this team (players missing from
+            # the upstream HKB feed).
+            prospects.extend(MANUAL_PROSPECTS.get(team_name, []))
 
             # Sort by position order first, then by level order within position
             prospects.sort(key=lambda p: (
