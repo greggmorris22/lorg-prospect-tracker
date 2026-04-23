@@ -587,8 +587,8 @@ def get_milb_stats(player_name: str, player_id: str = None) -> tuple:
     SPORT_ID_TO_LEVEL = {
         11: "AAA",
         12: "AA",
-        13: "HIGH_A",
-        14: "LOW_A",
+        13: "A+",
+        14: "A",
         15: "ROOKIE_BALL",
         16: "DSL",
         17: "VSL",
