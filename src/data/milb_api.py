@@ -345,7 +345,7 @@ def format_hitting_stats(splits: list, season_stat: dict, scores: dict = None) -
         o = _team_abbrev(game.get('opponent', {}))
         date_short = game.get('date', '')[5:]  # "YYYY-MM-DD" -> "MM-DD"
         game_pk = game.get('game', {}).get('gamePk')
-        lvl = game.get('level', '')
+        lvl = game.get('minorLeagueLevel', '')
 
         home_away = "vs" if game.get('isHome') else "@"
         date_value = _savant_url(game_pk, date_short) if game_pk else date_short
@@ -442,7 +442,7 @@ def format_pitching_stats(splits: list, season_stat: dict, scores: dict = None) 
         o = _team_abbrev(game.get('opponent', {}))
         date_short = game.get('date', '')[5:]
         game_pk = game.get('game', {}).get('gamePk')
-        lvl = game.get('level', '')
+        lvl = game.get('minorLeagueLevel', '')
 
         home_away = "vs" if game.get('isHome') else "@"
         date_value = _savant_url(game_pk, date_short) if game_pk else date_short
@@ -584,6 +584,15 @@ def get_milb_stats(player_name: str, player_id: str = None) -> tuple:
     # MiLB sport IDs — prospects are minor leaguers only in this tracker
     # 11: AAA, 12: AA, 13: A+, 14: A, 15: Rk(Complex), 16: DSL, 17: VSL
     sport_ids = [11, 12, 13, 14, 15, 16, 17]
+    SPORT_ID_TO_LEVEL = {
+        11: "AAA",
+        12: "AA",
+        13: "HIGH_A",
+        14: "LOW_A",
+        15: "ROOKIE_BALL",
+        16: "DSL",
+        17: "VSL",
+    }
 
     def fetch_level(sid):
         """Fetch game log and season stats for one sport level."""
@@ -600,10 +609,15 @@ def get_milb_stats(player_name: str, player_id: str = None) -> tuple:
     with concurrent.futures.ThreadPoolExecutor(max_workers=7) as executor:
         futures = {executor.submit(fetch_level, sid): sid for sid in sport_ids}
         for future in concurrent.futures.as_completed(futures):
+            sid = futures[future]
+            level = SPORT_ID_TO_LEVEL.get(sid, "UNK")
             res = future.result()
             if res and res.get('stats'):
                 for stat_block in res['stats']:
                     if stat_block['type']['displayName'] == 'gameLog' and stat_block.get('splits'):
+                        # Attach level to each game split so we know which minor league level it's from
+                        for split in stat_block['splits']:
+                            split['minorLeagueLevel'] = level
                         all_splits.extend(stat_block['splits'])
                     elif stat_block['type']['displayName'] == 'season' and stat_block.get('splits'):
                         new_stat = stat_block['splits'][0].get('stat', {})
