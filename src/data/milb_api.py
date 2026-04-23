@@ -13,6 +13,161 @@ import pandas as pd
 import concurrent.futures
 
 
+# FIP league constant — approximate recent MLB average. Update yearly if desired.
+FIP_CONSTANT = 3.10
+
+# FanGraphs "guts" constants for wOBA / wRC+, MLB 2024 values.
+# Used as a proxy for MiLB since FanGraphs does not publish per-MiLB-league
+# guts or park factors. wRC+ computed here is an approximation, not a
+# FanGraphs-accurate figure.
+WOBA_WEIGHTS = {
+    'BB':  0.689,
+    'HBP': 0.720,
+    '1B':  0.882,
+    '2B':  1.254,
+    '3B':  1.590,
+    'HR':  2.050,
+}
+WOBA_SCALE = 1.243
+LG_WOBA    = 0.310
+LG_R_PA    = 0.113
+
+
+def _pct(num, den) -> str:
+    """Format a ratio as a percent string, e.g. 0.123 -> '12.3%'. '—' on /0."""
+    try:
+        n, d = float(num), float(den)
+        if d == 0:
+            return '—'
+        return f"{(n / d) * 100:.1f}%"
+    except (TypeError, ValueError):
+        return '—'
+
+
+def _rate_per_9(num, ip) -> str:
+    """Compute a per-9-innings rate (e.g. K/9) from raw count and IP string."""
+    try:
+        n, i = float(num), float(ip)
+        if i == 0:
+            return '0.00'
+        return f"{(n * 9.0) / i:.2f}"
+    except (TypeError, ValueError):
+        return '0.00'
+
+
+def _ratio3(num, den) -> str:
+    """Format a ratio to a 3-decimal baseball-style string like '.312'."""
+    try:
+        n, d = float(num), float(den)
+        if d == 0:
+            return '.000'
+        v = n / d
+        # Strip leading 0 for values <1 to match AVG/OBP/SLG convention
+        s = f"{v:.3f}"
+        return s[1:] if s.startswith('0.') else s
+    except (TypeError, ValueError):
+        return '.000'
+
+
+def _iso(avg_str, slg_str) -> str:
+    """ISO = SLG - AVG, formatted like '.198'."""
+    try:
+        v = float(slg_str) - float(avg_str)
+        s = f"{v:.3f}"
+        return s[1:] if s.startswith('0.') else ('-' + s[2:] if s.startswith('-0.') else s)
+    except (TypeError, ValueError):
+        return '.000'
+
+
+def _compute_wrc_plus(s: dict) -> str:
+    """
+    Approximate wRC+ using MLB 2024 FanGraphs guts constants and park factor = 1.
+    Not FanGraphs-accurate for MiLB — league constants differ by level.
+    """
+    try:
+        pa  = float(s.get('plateAppearances', 0) or 0)
+        ab  = float(s.get('atBats', 0) or 0)
+        bb  = float(s.get('baseOnBalls', 0) or 0)
+        ibb = float(s.get('intentionalWalks', 0) or 0)
+        hbp = float(s.get('hitByPitch', 0) or 0)
+        sf  = float(s.get('sacFlies', 0) or 0)
+        h   = float(s.get('hits', 0) or 0)
+        d2  = float(s.get('doubles', 0) or 0)
+        d3  = float(s.get('triples', 0) or 0)
+        hr  = float(s.get('homeRuns', 0) or 0)
+
+        if pa == 0:
+            return '—'
+
+        singles = h - d2 - d3 - hr
+        num = (WOBA_WEIGHTS['BB']  * (bb - ibb)
+             + WOBA_WEIGHTS['HBP'] * hbp
+             + WOBA_WEIGHTS['1B']  * singles
+             + WOBA_WEIGHTS['2B']  * d2
+             + WOBA_WEIGHTS['3B']  * d3
+             + WOBA_WEIGHTS['HR']  * hr)
+        den = ab + bb - ibb + sf + hbp
+        if den == 0:
+            return '—'
+        woba = num / den
+        wraa = ((woba - LG_WOBA) / WOBA_SCALE) * pa
+        wrc_plus = (((wraa / pa) + LG_R_PA) / LG_R_PA) * 100
+        return str(int(round(wrc_plus)))
+    except (TypeError, ValueError, ZeroDivisionError):
+        return '—'
+
+
+def _compute_pitcher_babip(s: dict) -> str:
+    """BABIP = (H - HR) / (BF - K - HR - BB - HBP - SF)."""
+    try:
+        h   = float(s.get('hits', 0) or 0)
+        hr  = float(s.get('homeRuns', 0) or 0)
+        bf  = float(s.get('battersFaced', 0) or 0)
+        k   = float(s.get('strikeOuts', 0) or 0)
+        bb  = float(s.get('baseOnBalls', 0) or 0)
+        hbp = float(s.get('hitBatsmen', 0) or 0)
+        sf  = float(s.get('sacFlies', 0) or 0)
+        den = bf - k - hr - bb - hbp - sf
+        if den <= 0:
+            return '.000'
+        return _ratio3(h - hr, den)
+    except (TypeError, ValueError):
+        return '.000'
+
+
+def _compute_lob_pct(s: dict) -> str:
+    """LOB% = (H + BB + HBP - R) / (H + BB + HBP - 1.4*HR)."""
+    try:
+        h   = float(s.get('hits', 0) or 0)
+        bb  = float(s.get('baseOnBalls', 0) or 0)
+        hbp = float(s.get('hitBatsmen', 0) or 0)
+        r   = float(s.get('runs', 0) or 0)
+        hr  = float(s.get('homeRuns', 0) or 0)
+        den = h + bb + hbp - (1.4 * hr)
+        num = h + bb + hbp - r
+        if den == 0:
+            return '—'
+        return f"{(num / den) * 100:.1f}%"
+    except (TypeError, ValueError):
+        return '—'
+
+
+def _compute_fip(s: dict) -> str:
+    """FIP = ((13*HR + 3*(BB+HBP) - 2*K) / IP) + FIP_CONSTANT."""
+    try:
+        hr  = float(s.get('homeRuns', 0) or 0)
+        bb  = float(s.get('baseOnBalls', 0) or 0)
+        hbp = float(s.get('hitBatsmen', 0) or 0)
+        k   = float(s.get('strikeOuts', 0) or 0)
+        ip  = float(s.get('inningsPitched', 0) or 0)
+        if ip == 0:
+            return '0.00'
+        fip = ((13 * hr + 3 * (bb + hbp) - 2 * k) / ip) + FIP_CONSTANT
+        return f"{fip:.2f}"
+    except (TypeError, ValueError):
+        return '0.00'
+
+
 def search_player(player_name: str) -> dict:
     """
     Search the MLB Stats API by name and return basic player info.
@@ -174,8 +329,8 @@ def format_hitting_stats(splits: list, season_stat: dict, scores: dict = None) -
 
     Returns:
         season_df  -- one-row DataFrame of 2026 season totals
-                      (GP, AB, R, H, 2B, 3B, HR, RBI, BB, SO, SB, CS,
-                       AVG, OBP, SLG, OPS)
+                      (PA, H, 2B, 3B, HR, R, RBI, SB, CS, BB%, K%, ISO,
+                       BABIP, AVG, OBP, SLG, OPS, wRC+)
         games_df   -- DataFrame of the 7 most recent games in chronological
                       order (Date linked to Savant, Team, Opp, Score, and
                       per-game slash-line stats)
@@ -231,23 +386,30 @@ def format_hitting_stats(splits: list, season_stat: dict, scores: dict = None) -
         except (ValueError, TypeError):
             ops_val = '.000'
 
+    avg_str = s.get('avg', '.000')
+    pa = s.get('plateAppearances', 0)
+    bb = s.get('baseOnBalls', 0)
+    so = s.get('strikeOuts', 0)
+
     season_df = pd.DataFrame([{
-        "GP":  s.get('gamesPlayed', 0),
-        "AB":  s.get('atBats', 0),
-        "R":   s.get('runs', 0),
-        "H":   s.get('hits', 0),
-        "2B":  s.get('doubles', 0),
-        "3B":  s.get('triples', 0),
-        "HR":  s.get('homeRuns', 0),
-        "RBI": s.get('rbi', 0),
-        "BB":  s.get('baseOnBalls', 0),
-        "SO":  s.get('strikeOuts', 0),
-        "SB":  s.get('stolenBases', 0),
-        "CS":  s.get('caughtStealing', 0),
-        "AVG": s.get('avg', '.000'),
-        "OBP": obp_str,
-        "SLG": slg_str,
-        "OPS": ops_val,
+        "PA":    pa,
+        "H":     s.get('hits', 0),
+        "2B":    s.get('doubles', 0),
+        "3B":    s.get('triples', 0),
+        "HR":    s.get('homeRuns', 0),
+        "R":     s.get('runs', 0),
+        "RBI":   s.get('rbi', 0),
+        "SB":    s.get('stolenBases', 0),
+        "CS":    s.get('caughtStealing', 0),
+        "BB%":   _pct(bb, pa),
+        "K%":    _pct(so, pa),
+        "ISO":   _iso(avg_str, slg_str),
+        "BABIP": s.get('babip', '.000'),
+        "AVG":   avg_str,
+        "OBP":   obp_str,
+        "SLG":   slg_str,
+        "OPS":   ops_val,
+        "wRC+":  _compute_wrc_plus(s),
     }])
 
     return season_df, games_df
@@ -261,8 +423,8 @@ def format_pitching_stats(splits: list, season_stat: dict, scores: dict = None) 
 
     Returns:
         season_df  -- one-row DataFrame of 2026 season totals
-                      (GP, GS, W, L, SV, HLD, IP, H, R, ER, BB, K,
-                       ERA, WHIP, BAA, QS)
+                      (GP-GS, W-L, SV-BS, IP, QS, R, ER, BAA, K/9, BB/9,
+                       HR/9, K%-BB%, BABIP, LOB%, GB%, HR/FB, ERA, FIP)
         games_df   -- DataFrame of the 7 most recent appearances in
                       chronological order
                       (Date, Team, Opp, Score, GS, W, L, SV, BS, HLD,
@@ -309,23 +471,54 @@ def format_pitching_stats(splits: list, season_stat: dict, scores: dict = None) 
     games_df = pd.DataFrame(rows)
 
     s = season_stat if season_stat else {}
+
+    ip = s.get('inningsPitched', '0.0')
+    bf = s.get('battersFaced', 0)
+    k  = s.get('strikeOuts', 0)
+    bb = s.get('baseOnBalls', 0)
+    hr = s.get('homeRuns', 0)
+    go = s.get('groundOuts', 0) or 0
+    ao = s.get('airOuts', 0) or 0
+
+    # K/9, BB/9, HR/9 — API provides directly, but fall back to computed
+    # values if a field is missing so the column never shows "0.00" by accident.
+    k9  = s.get('strikeoutsPer9Inn') or _rate_per_9(k, ip)
+    bb9 = s.get('walksPer9Inn')      or _rate_per_9(bb, ip)
+    hr9 = s.get('homeRunsPer9')      or _rate_per_9(hr, ip)
+
+    # K%-BB% — single percent-point gap, e.g. "18.4%"
+    try:
+        bf_f = float(bf)
+        k_bb_pct = f"{((float(k) - float(bb)) / bf_f) * 100:.1f}%" if bf_f > 0 else '—'
+    except (TypeError, ValueError):
+        k_bb_pct = '—'
+
+    # GB% and HR/FB are approximations. MLB Stats API exposes groundOuts and
+    # airOuts (i.e. batted-ball *outs*), not full batted-ball types, so these
+    # will drift from FanGraphs' GB/(GB+FB+LD) and HR/FB computed from true
+    # batted-ball data.
+    gb_pct = _pct(go, go + ao)
+    hr_fb  = _pct(hr, ao)
+
     season_df = pd.DataFrame([{
-        "GP":   s.get('gamesPlayed', 0),
-        "GS":   s.get('gamesStarted', 0),
-        "W":    s.get('wins', 0),
-        "L":    s.get('losses', 0),
-        "SV":   s.get('saves', 0),
-        "HLD":  s.get('holds', 0),
-        "IP":   s.get('inningsPitched', '0.0'),
-        "H":    s.get('hits', 0),
-        "R":    s.get('runs', 0),
-        "ER":   s.get('earnedRuns', 0),
-        "BB":   s.get('baseOnBalls', 0),
-        "K":    s.get('strikeOuts', 0),
-        "ERA":  s.get('era', '0.00'),
-        "WHIP": s.get('whip', '0.00'),
-        "BAA":  s.get('avg', '.000'),
-        "QS":   s.get('qualityStarts', 0),
+        "GP-GS":  f"{s.get('gamesPlayed', 0)}-{s.get('gamesStarted', 0)}",
+        "W-L":    f"{s.get('wins', 0)}-{s.get('losses', 0)}",
+        "SV-BS":  f"{s.get('saves', 0)}-{s.get('blownSaves', 0)}",
+        "IP":     ip,
+        "QS":     s.get('qualityStarts', 0),
+        "R":      s.get('runs', 0),
+        "ER":     s.get('earnedRuns', 0),
+        "BAA":    s.get('avg', '.000'),
+        "K/9":    k9,
+        "BB/9":   bb9,
+        "HR/9":   hr9,
+        "K%-BB%": k_bb_pct,
+        "BABIP":  _compute_pitcher_babip(s),
+        "LOB%":   _compute_lob_pct(s),
+        "GB%":    gb_pct,
+        "HR/FB":  hr_fb,
+        "ERA":    s.get('era', '0.00'),
+        "FIP":    _compute_fip(s),
     }])
 
     return season_df, games_df
