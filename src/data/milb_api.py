@@ -345,6 +345,7 @@ def format_hitting_stats(splits: list, season_stat: dict, scores: dict = None) -
         o = _team_abbrev(game.get('opponent', {}))
         date_short = game.get('date', '')[5:]  # "YYYY-MM-DD" -> "MM-DD"
         game_pk = game.get('game', {}).get('gamePk')
+        lvl = game.get('level', '')
 
         home_away = "vs" if game.get('isHome') else "@"
         date_value = _savant_url(game_pk, date_short) if game_pk else date_short
@@ -354,6 +355,7 @@ def format_hitting_stats(splits: list, season_stat: dict, scores: dict = None) -
 
         rows.append({
             "Date":  date_value,
+            "Lvl":   lvl,
             "Team":  t,
             "Opp":   f"{home_away} {o}",
             "Score": score_str,
@@ -440,6 +442,7 @@ def format_pitching_stats(splits: list, season_stat: dict, scores: dict = None) 
         o = _team_abbrev(game.get('opponent', {}))
         date_short = game.get('date', '')[5:]
         game_pk = game.get('game', {}).get('gamePk')
+        lvl = game.get('level', '')
 
         home_away = "vs" if game.get('isHome') else "@"
         date_value = _savant_url(game_pk, date_short) if game_pk else date_short
@@ -447,6 +450,7 @@ def format_pitching_stats(splits: list, season_stat: dict, scores: dict = None) 
 
         rows.append({
             "Date":  date_value,
+            "Lvl":   lvl,
             "Team":  t,
             "Opp":   f"{home_away} {o}",
             "Score": score_str,
