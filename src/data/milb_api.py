@@ -467,7 +467,7 @@ def format_pitching_stats(splits: list, season_stat: dict, scores: dict = None) 
             "HR":    s.get('homeRuns', 0),
             "BB":    s.get('baseOnBalls', 0),
             "K":     s.get('strikeOuts', 0),
-            "PIT":   s.get('numberOfPitches', 0),
+            "NP-S":  f"{s.get('numberOfPitches', 0)}-{s.get('strikes', 0)}",
             "BAA":   s.get('avg', '.000'),
             "ERA":   s.get('era', '0.00'),
         })
