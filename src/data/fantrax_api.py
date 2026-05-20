@@ -17,11 +17,7 @@ LEVEL_ORDER = {"AAA": 0, "AA": 1, "HIGH_A": 2, "LOW_A": 3, "ROOKIE_BALL": 4}
 # player who is on a Fantrax roster. Keyed by exact Fantrax team name as it
 # appears in the upstream feed. These are appended to the matching team's
 # prospect list before sorting.
-MANUAL_PROSPECTS = {
-    "Uncle Ben's Rice \U0001f33e": [
-        {"name": "Ronny Cruz", "pos": "SS", "level": "LOW_A"},
-    ],
-}
+MANUAL_PROSPECTS = {}
 
 
 def _primary_position(positions: list) -> str:
