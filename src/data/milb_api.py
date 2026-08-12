@@ -9,8 +9,41 @@ along with player profile info (current level, team, age, position).
 import urllib.request
 import urllib.parse
 import json
+import threading
 import pandas as pd
 import concurrent.futures
+
+
+# Sport IDs searched when resolving a player name. Without these the
+# /people/search endpoint only covers MLB, so any prospect who has never
+# appeared in a big-league game returns zero results and disappears from
+# the app entirely.
+#   1: MLB, 11: AAA, 12: AA, 13: A+, 14: A, 15: Rk(Complex), 16: DSL,
+#   17: VSL, 21/22/23: independent & winter leagues
+SEARCH_SPORT_IDS = "1,11,12,13,14,15,16,17,21,22,23"
+
+# MiLB sport IDs used for stat lookups, and their display level.
+SPORT_ID_TO_LEVEL = {
+    11: "AAA",
+    12: "AA",
+    13: "A+",
+    14: "A",
+    15: "ROOKIE_BALL",
+    16: "DSL",
+    17: "VSL",
+}
+MILB_SPORT_IDS = list(SPORT_ID_TO_LEVEL)
+
+# Maps a Fantrax roster level to the MLB sport IDs that represent it. Used as
+# a tiebreaker when two same-named players are in the same organization
+# (e.g. one at Low-A and one in the DSL).
+LEVEL_TO_SPORT_IDS = {
+    "AAA":         {11},
+    "AA":          {12},
+    "HIGH_A":      {13},
+    "LOW_A":       {14},
+    "ROOKIE_BALL": {15, 16, 17},
+}
 
 
 # FIP league constant — approximate recent MLB average. Update yearly if desired.
@@ -168,9 +201,125 @@ def _compute_fip(s: dict) -> str:
         return '0.00'
 
 
-def search_player(player_name: str) -> dict:
+# Cache for the MLB team abbreviation -> team ID map. Built once per process
+# on first use; the 30 MLB clubs do not change mid-session.
+_ORG_ID_MAP = None
+_ORG_ID_LOCK = threading.Lock()
+
+
+def fetch_org_id_map() -> dict:
+    """
+    Build a map of MLB team abbreviation -> MLB team ID, e.g. {'NYY': 147}.
+
+    The Fantrax feed identifies a prospect's organization by abbreviation
+    while the Stats API identifies it by numeric parentOrgId, so we need this
+    to compare the two. Fetched once and cached for the life of the process.
+
+    Returns an empty dict if the lookup fails, in which case org matching is
+    skipped and player resolution falls back to the first search result.
+    """
+    global _ORG_ID_MAP
+    if _ORG_ID_MAP is not None:
+        return _ORG_ID_MAP
+
+    with _ORG_ID_LOCK:
+        # Re-check inside the lock; another thread may have populated it while
+        # this one was waiting.
+        if _ORG_ID_MAP is not None:
+            return _ORG_ID_MAP
+
+        data = fetch_stats("https://statsapi.mlb.com/api/v1/teams?sportId=1")
+        org_map = {}
+        if data:
+            for t in data.get('teams', []):
+                abbrev = t.get('abbreviation')
+                if abbrev:
+                    org_map[abbrev] = t.get('id')
+        _ORG_ID_MAP = org_map
+        return _ORG_ID_MAP
+
+
+def _team_sport_id(team_id: int):
+    """
+    Return the MLB sport ID (level) a team plays at, e.g. 14 for a Low-A club.
+    Returns None if unknown. Only called to break a tie between two players
+    with the same name in the same organization, so the extra request is rare.
+    """
+    if not team_id:
+        return None
+    data = fetch_stats(f"https://statsapi.mlb.com/api/v1/teams/{team_id}")
+    if data and data.get('teams'):
+        return data['teams'][0].get('sport', {}).get('id')
+    return None
+
+
+def _pick_candidate(people: list, org: str = None, level: str = None) -> dict:
+    """
+    Choose the right person from a list of same-named search results.
+
+    Searching every level is what makes prospects findable at all, but it also
+    means a name like "Luis Hernandez" returns 22 people. Narrowing happens in
+    three passes:
+
+      0. Active roster -- drop retired players and anyone without a current
+         club. Needs no hints, so it also helps the watch list, where entries
+         are bare names with no org attached.
+      1. Organization -- keep candidates whose current team's parentOrgId
+         matches the org the Fantrax roster lists them under. This resolves
+         nearly every case on its own.
+      2. Level -- if more than one candidate survives (same name, same org,
+         different affiliates), keep the one playing at the roster's level.
+
+    Falls back to the first result whenever a pass would eliminate everything
+    or no org/level hint was supplied, so behavior never gets worse than the
+    original "take people[0]" logic.
+    """
+    if not people:
+        return None
+    if len(people) == 1:
+        return people[0]
+
+    candidates = people
+
+    # Pass 0 -- active players with a current club
+    active = [p for p in candidates if p.get('active') and p.get('currentTeam')]
+    if active:
+        candidates = active
+    if len(candidates) == 1:
+        return candidates[0]
+
+    # Pass 1 -- organization
+    org_id = fetch_org_id_map().get(org) if org else None
+    if org_id:
+        matches = [
+            p for p in candidates
+            if (p.get('currentTeam') or {}).get('parentOrgId') == org_id
+        ]
+        if matches:
+            candidates = matches
+    if len(candidates) == 1:
+        return candidates[0]
+
+    # Pass 2 -- level within the organization
+    wanted = LEVEL_TO_SPORT_IDS.get(level) if level else None
+    if wanted:
+        matches = [
+            p for p in candidates
+            if _team_sport_id((p.get('currentTeam') or {}).get('id')) in wanted
+        ]
+        if matches:
+            candidates = matches
+
+    return candidates[0]
+
+
+def search_player(player_name: str, org: str = None, level: str = None) -> dict:
     """
     Search the MLB Stats API by name and return basic player info.
+
+    org and level come from the Fantrax roster (e.g. 'NYY' and 'LOW_A') and are
+    used to pick the right person when several share a name. Both are optional;
+    without them the first search result is used.
 
     Returns a dict with keys:
         id         -- MLB Stats API player ID (string)
@@ -182,19 +331,24 @@ def search_player(player_name: str) -> dict:
     Returns None if the search finds no results or the request fails.
     """
     encoded_name = urllib.parse.quote(player_name)
-    url = f"https://statsapi.mlb.com/api/v1/people/search?names={encoded_name}"
+    # sportIds widens the search past MLB; hydrate=currentTeam brings back the
+    # parentOrgId that _pick_candidate needs, without a second request.
+    url = (
+        f"https://statsapi.mlb.com/api/v1/people/search?names={encoded_name}"
+        f"&sportIds={SEARCH_SPORT_IDS}&hydrate=currentTeam"
+    )
 
     req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
     try:
         resp = urllib.request.urlopen(req)
         data = json.loads(resp.read())
         people = data.get('people', [])
-        if people:
-            p = people[0]
+        p = _pick_candidate(people, org=org, level=level)
+        if p:
             return {
                 'id':         str(p['id']),
                 'is_pitcher': p.get('primaryPosition', {}).get('code') == '1',
-                'team':       p.get('currentTeam', {}).get('name', 'UNK'),
+                'team':       (p.get('currentTeam') or {}).get('name', 'UNK'),
                 'age':        p.get('currentAge', 'UNK'),
                 'position':   normalize_position(p.get('primaryPosition', {}).get('abbreviation', 'UNK')),
             }
@@ -528,7 +682,8 @@ def format_pitching_stats(splits: list, season_stat: dict, scores: dict = None) 
     return season_df, games_df
 
 
-def get_milb_stats(player_name: str, player_id: str = None) -> tuple:
+def get_milb_stats(player_name: str, player_id: str = None,
+                   org: str = None, level: str = None) -> tuple:
     """
     Fetch MiLB game logs and season stats for a player.
 
@@ -536,8 +691,12 @@ def get_milb_stats(player_name: str, player_id: str = None) -> tuple:
     search entirely — useful when two players share a name and the wrong one
     is returned by the search endpoint.
 
-    Returns a 6-tuple:
-        (season_df, games_df, current_level, team, age, position)
+    org / level: optional hints from the Fantrax roster (e.g. 'NYY', 'LOW_A')
+    used to pick the right person when several share a name. Ignored when
+    player_id is given.
+
+    Returns a 7-tuple:
+        (season_df, games_df, current_level, team, age, position, mlbam_id)
 
     Where:
         season_df     -- one-row season-totals DataFrame
@@ -547,6 +706,8 @@ def get_milb_stats(player_name: str, player_id: str = None) -> tuple:
         team          -- player's current team full name
         age           -- player's current age
         position      -- player's primary position abbreviation
+        mlbam_id      -- MLB Stats API player ID, used to build the player's
+                         Prospect Savant URL
 
     Returns None if the player cannot be found or has no 2026 stats.
     """
@@ -569,7 +730,7 @@ def get_milb_stats(player_name: str, player_id: str = None) -> tuple:
             print(f"Error fetching player {player_id}: {e}")
             return None
     else:
-        p_info = search_player(player_name)
+        p_info = search_player(player_name, org=org, level=level)
 
     if not p_info:
         return None
@@ -581,18 +742,9 @@ def get_milb_stats(player_name: str, player_id: str = None) -> tuple:
     group      = "pitching" if p_info['is_pitcher'] else "hitting"
     year       = 2026
 
-    # MiLB sport IDs — prospects are minor leaguers only in this tracker
-    # 11: AAA, 12: AA, 13: A+, 14: A, 15: Rk(Complex), 16: DSL, 17: VSL
-    sport_ids = [11, 12, 13, 14, 15, 16, 17]
-    SPORT_ID_TO_LEVEL = {
-        11: "AAA",
-        12: "AA",
-        13: "A+",
-        14: "A",
-        15: "ROOKIE_BALL",
-        16: "DSL",
-        17: "VSL",
-    }
+    # MiLB sport IDs — prospects are minor leaguers only in this tracker.
+    # See SPORT_ID_TO_LEVEL at the top of this module.
+    sport_ids = MILB_SPORT_IDS
 
     def fetch_level(sid):
         """Fetch game log and season stats for one sport level."""
@@ -655,4 +807,4 @@ def get_milb_stats(player_name: str, player_id: str = None) -> tuple:
     else:
         season_df, games_df = format_hitting_stats(all_splits, best_season_stat, scores)
 
-    return season_df, games_df, current_level, team, age, position
+    return season_df, games_df, current_level, team, age, position, player_id

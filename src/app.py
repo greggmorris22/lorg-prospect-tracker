@@ -26,6 +26,14 @@ league_id = "eofqrg7umiyswern"
 #   "Esteban Mejia" = "821757"
 PLAYER_ID_OVERRIDES = st.secrets.get("player_id_overrides", {})
 
+# Prospect Savant player pages are keyed by MLBAM ID — the same ID the MLB
+# Stats API uses — so the link needs no extra lookup.
+SAVANT_URL_TEMPLATE = "https://prospectsavant.com/player/{mlbam_id}"
+
+# Material Symbols icon rendered next to each player name as the link target.
+# Streamlit expands ":material/<name>:" in markdown into an inline icon.
+SAVANT_ICON = ":material/open_in_new:"
+
 # Column config applied only to Recent Games tables. Renders the Date column
 # as a clickable link to the Baseball Savant gamefeed. The URL has the short
 # date embedded as &d=MM-DD so the regex can extract it for display.
@@ -72,12 +80,18 @@ def render_player(player_name: str, result: tuple):
     Render one player's stat block: header line, 2026 Stats table,
     Recent Games table, and a divider.
 
-    result is the 6-tuple returned by get_milb_stats:
-        (season_df, games_df, current_level, team, age, position)
-    """
-    season_df, games_df, current_level, team, age, position = result
+    result is the 7-tuple returned by get_milb_stats:
+        (season_df, games_df, current_level, team, age, position, mlbam_id)
 
-    st.subheader(f"{player_name} | {position} | {current_level}")
+    The header carries a link icon to the player's Prospect Savant page, which
+    is keyed by the same MLBAM ID the stats come from.
+    """
+    season_df, games_df, current_level, team, age, position, mlbam_id = result
+
+    header = f"{player_name} | {position} | {current_level}"
+    if mlbam_id:
+        header += f" [{SAVANT_ICON}]({SAVANT_URL_TEMPLATE.format(mlbam_id=mlbam_id)})"
+    st.subheader(header)
     st.caption(f"{team} | Age {age}")
 
     st.markdown("**2026 Stats**")
@@ -127,15 +141,17 @@ if selected_team == WATCHLIST_LABEL:
 
             # Preserve original watchlist order
             wl_map = {name: result for name, result in wl_results}
-            found_watchlist = False
-            for entry in watchlist:
-                player_name = entry.split("|")[0] if "|" in entry else entry
-                result = wl_map.get(player_name)
-                if result is not None:
-                    found_watchlist = True
-                    render_player(player_name, result)
+            wl_names = [
+                entry.split("|")[0] if "|" in entry else entry
+                for entry in watchlist
+            ]
+            wl_rendered = [n for n in wl_names if wl_map.get(n) is not None]
+            found_watchlist = bool(wl_rendered)
 
-            st.success(f"Found {len(watchlist)} players on your watch list.")
+            for player_name in wl_rendered:
+                render_player(player_name, wl_map[player_name])
+
+            st.success(f"Found {len(wl_rendered)} players on your watch list.")
             if not found_watchlist:
                 st.info("No active MiLB game logs found for your watch list players.")
 
@@ -147,28 +163,39 @@ else:
         st.warning(f"No players with 'prospect' status found on {selected_team}.")
         st.stop()
 
-    def fetch_prospect(player_name: str):
-        """Fetch stats for one prospect, applying any known ID overrides."""
+    def fetch_prospect(prospect: dict):
+        """
+        Fetch stats for one prospect record from fantrax_api.
+
+        A manual ID override wins if one is configured; otherwise the player's
+        org and level are passed as hints so the name search picks the right
+        person when several share a name.
+        """
+        player_name = prospect['name']
         override_id = PLAYER_ID_OVERRIDES.get(player_name)
-        result = get_milb_stats(player_name, player_id=override_id)
+        result = get_milb_stats(
+            player_name,
+            player_id=override_id,
+            org=prospect.get('org'),
+            level=prospect.get('level'),
+        )
         return player_name, result
 
     with st.spinner(f"Fetching MiLB stats for {selected_team}..."):
         with concurrent.futures.ThreadPoolExecutor(max_workers=20) as executor:
-            futures = [executor.submit(fetch_prospect, name) for name in prospects]
+            futures = [executor.submit(fetch_prospect, p) for p in prospects]
             team_results = [f.result() for f in concurrent.futures.as_completed(futures)]
 
     # Preserve the original sorted order from fantrax_api (pos then level)
     results_map = {name: result for name, result in team_results}
-    found_minors = False
+    rendered = [p for p in prospects if results_map.get(p['name']) is not None]
 
-    st.success(f"Found {len(prospects)} prospects on {selected_team}.")
+    st.success(f"Found {len(rendered)} prospects on {selected_team}.")
 
-    for player_name in prospects:
-        result = results_map.get(player_name)
-        if result is not None:
-            found_minors = True
-            render_player(player_name, result)
+    for prospect in rendered:
+        render_player(prospect['name'], results_map[prospect['name']])
+
+    found_minors = bool(rendered)
 
     if not found_minors:
         st.info("No active MiLB game logs found for the prospects on this team.")

@@ -17,6 +17,9 @@ LEVEL_ORDER = {"AAA": 0, "AA": 1, "HIGH_A": 2, "LOW_A": 3, "ROOKIE_BALL": 4}
 # player who is on a Fantrax roster. Keyed by exact Fantrax team name as it
 # appears in the upstream feed. These are appended to the matching team's
 # prospect list before sorting.
+#
+# Each entry should be a dict shaped like the records built below:
+#   {'name': 'Some Player', 'pos': 'SS', 'level': 'LOW_A', 'org': 'NYY'}
 MANUAL_PROSPECTS = {}
 
 
@@ -35,7 +38,15 @@ def _primary_position(positions: list) -> str:
 def fetch_league_teams(league_id: str) -> dict:
     """
     Fetches all teams and their prospect rosters from HarryKnowsBall proxy API.
-    Returns a dictionary mapping Team Name -> List of Prospect Player Names.
+    Returns a dictionary mapping Team Name -> List of prospect records.
+
+    Each prospect record is a dict:
+        {'name': 'Dax Kilby', 'pos': 'SS', 'level': 'LOW_A', 'org': 'NYY'}
+
+    The 'org' (MLB parent organization abbreviation, e.g. NYY) and 'level' are
+    carried through because the MLB Stats API name search returns multiple
+    people for common names. Matching a candidate's parent org against 'org'
+    is what keeps us from showing the wrong Luis Hernandez.
 
     Players are filtered to active minor leaguers only (AAA/AA/HIGH_A/LOW_A/
     ROOKIE_BALL) and sorted by position (C > 1B > 2B > 3B > SS > OF > SP > RP)
@@ -78,6 +89,9 @@ def fetch_league_teams(league_id: str) -> dict:
                         'name': player.get('name', 'Unknown'),
                         'pos': primary_pos,
                         'level': level,
+                        # MLB parent org abbreviation (NYY, KC, ...). Used to
+                        # disambiguate players who share a name.
+                        'org': player.get('team'),
                     })
 
             # Append any manual additions for this team (players missing from
@@ -90,7 +104,7 @@ def fetch_league_teams(league_id: str) -> dict:
                 LEVEL_ORDER.get(p['level'], 99),
             ))
 
-            teams_dict[team_name] = [p['name'] for p in prospects]
+            teams_dict[team_name] = prospects
 
         return teams_dict
     except Exception as e:
