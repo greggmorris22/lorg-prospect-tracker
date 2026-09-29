@@ -21,6 +21,15 @@ st.markdown(
 def load_teams(league_id):
     return fetch_league_teams(league_id)
 
+@st.cache_data(ttl=900, show_spinner=False)  # 15 min: games only finish a few times a day
+def load_player_stats(player_name, player_id, org, level):
+    """
+    Cached get_milb_stats. Without this every rerun (any dropdown change)
+    re-downloads ~10 API responses per player; with it, revisiting a team is
+    instant. Arguments are the cache key, so they must be plain values.
+    """
+    return get_milb_stats(player_name, player_id=player_id, org=org, level=level)
+
 league_id = "eofqrg7umiyswern"
 
 # Player ID overrides: maps a player's display name to a specific MLB Stats API
@@ -34,9 +43,15 @@ PLAYER_ID_OVERRIDES = st.secrets.get("player_id_overrides", {})
 # Stats API uses — so the link needs no extra lookup.
 SAVANT_URL_TEMPLATE = "https://prospectsavant.com/player/{mlbam_id}"
 
-# Material Symbols icon rendered next to each player name as the link target.
-# Streamlit expands ":material/<name>:" in markdown into an inline icon.
-SAVANT_ICON = ":material/open_in_new:"
+# MiLB.com player pages also resolve from the bare MLBAM ID
+# (e.g. https://www.milb.com/player/823787), so no name slug is needed.
+MILB_URL_TEMPLATE = "https://www.milb.com/player/{mlbam_id}"
+
+# Material Symbols icons rendered next to each player name as link targets.
+# Streamlit expands ":material/<name>:" in markdown into an inline icon. The two
+# icons differ so they can be told apart; each link also has a hover label.
+SAVANT_ICON = ":material/query_stats:"
+MILB_ICON = ":material/sports_baseball:"
 
 # Column config applied only to Recent Games tables. Renders the Date column
 # as a clickable link to the Baseball Savant gamefeed. The URL has the short
@@ -87,14 +102,17 @@ def render_player(player_name: str, result: tuple):
     result is the 7-tuple returned by get_milb_stats:
         (season_df, games_df, current_level, team, age, position, mlbam_id)
 
-    The header carries a link icon to the player's Prospect Savant page, which
-    is keyed by the same MLBAM ID the stats come from.
+    The header carries two link icons: the player's MiLB.com page and their
+    Prospect Savant page, both keyed by the MLBAM ID the stats come from.
     """
     season_df, games_df, current_level, team, age, position, mlbam_id = result
 
     header = f"{player_name} | {position} | {current_level}"
     if mlbam_id:
-        header += f" [{SAVANT_ICON}]({SAVANT_URL_TEMPLATE.format(mlbam_id=mlbam_id)})"
+        milb_url = MILB_URL_TEMPLATE.format(mlbam_id=mlbam_id)
+        savant_url = SAVANT_URL_TEMPLATE.format(mlbam_id=mlbam_id)
+        header += f' [{MILB_ICON}]({milb_url} "MiLB.com player page")'
+        header += f' [{SAVANT_ICON}]({savant_url} "Prospect Savant player page")'
     st.subheader(header)
     st.caption(f"{team} | Age {age}")
 
@@ -135,7 +153,7 @@ if selected_team == WATCHLIST_LABEL:
                 else:
                     player_name = entry
                     player_id = PLAYER_ID_OVERRIDES.get(player_name)
-                result = get_milb_stats(player_name, player_id=player_id)
+                result = load_player_stats(player_name, player_id, None, None)
                 return player_name, result
 
             with st.spinner("Fetching watch list stats..."):
@@ -177,11 +195,11 @@ else:
         """
         player_name = prospect['name']
         override_id = PLAYER_ID_OVERRIDES.get(player_name)
-        result = get_milb_stats(
+        result = load_player_stats(
             player_name,
-            player_id=override_id,
-            org=prospect.get('org'),
-            level=prospect.get('level'),
+            override_id,
+            prospect.get('org'),
+            prospect.get('level'),
         )
         return player_name, result
 

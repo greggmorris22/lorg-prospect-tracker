@@ -742,7 +742,7 @@ def get_milb_stats(player_name: str, player_id: str = None,
         age           -- player's current age
         position      -- player's primary position abbreviation
         mlbam_id      -- MLB Stats API player ID, used to build the player's
-                         Prospect Savant URL
+                         MiLB.com and Prospect Savant URLs
 
     Returns None if the player cannot be found or has no 2026 stats.
     """
