@@ -2,6 +2,10 @@ import sys
 import os
 sys.path.insert(0, os.path.dirname(__file__))
 
+import base64
+import html
+from pathlib import Path
+
 import streamlit as st
 import concurrent.futures
 import pandas as pd
@@ -9,6 +13,14 @@ from data.fantrax_api import fetch_league_teams
 from data.milb_api import get_milb_stats
 
 st.set_page_config(page_title="LORG Prospect Tracker", layout="wide")
+
+# Hide the chain-link icon Streamlit adds to every heading on hover (a link to
+# that heading's own anchor). It duplicates nothing useful here and crowds the
+# MiLB.com / Prospect Savant logo links next to each player name.
+st.markdown(
+    "<style>[data-testid='stHeaderActionElements'] {display: none;}</style>",
+    unsafe_allow_html=True,
+)
 
 st.title("LORG Prospect Tracker")
 st.markdown(
@@ -47,11 +59,22 @@ SAVANT_URL_TEMPLATE = "https://prospectsavant.com/player/{mlbam_id}"
 # (e.g. https://www.milb.com/player/823787), so no name slug is needed.
 MILB_URL_TEMPLATE = "https://www.milb.com/player/{mlbam_id}"
 
-# Material Symbols icons rendered next to each player name as link targets.
-# Streamlit expands ":material/<name>:" in markdown into an inline icon. The two
-# icons differ so they can be told apart; each link also has a hover label.
-SAVANT_ICON = ":material/query_stats:"
-MILB_ICON = ":material/sports_baseball:"
+def _logo_data_uri(filename: str) -> str:
+    """
+    Read a logo from src/assets and return it as an inline data URI, so the
+    header can show it as a plain <img> without depending on another site
+    hosting the image.
+    """
+    data = (Path(__file__).parent / "assets" / filename).read_bytes()
+    return "data:image/png;base64," + base64.b64encode(data).decode("ascii")
+
+# Logos shown next to each player name as link targets. The Savant logo is
+# transparent with a black outline, so it gets a white circular backing to
+# stay visible on dark themes.
+MILB_LOGO = _logo_data_uri("milb.png")
+SAVANT_LOGO = _logo_data_uri("prospect_savant.png")
+LOGO_STYLE = "height:22px;vertical-align:middle;margin-left:10px;"
+SAVANT_LOGO_STYLE = LOGO_STYLE + "background:#fff;border-radius:50%;"
 
 # Column config applied only to Recent Games tables. Renders the Date column
 # as a clickable link to the Baseball Savant gamefeed. The URL has the short
@@ -102,18 +125,25 @@ def render_player(player_name: str, result: tuple):
     result is the 7-tuple returned by get_milb_stats:
         (season_df, games_df, current_level, team, age, position, mlbam_id)
 
-    The header carries two link icons: the player's MiLB.com page and their
-    Prospect Savant page, both keyed by the MLBAM ID the stats come from.
+    The header carries two separate logo links: the player's MiLB.com page and
+    their Prospect Savant page, both keyed by the MLBAM ID the stats come from.
     """
     season_df, games_df, current_level, team, age, position, mlbam_id = result
 
-    header = f"{player_name} | {position} | {current_level}"
+    # Escaped because the header is rendered as HTML and the name comes from
+    # an outside feed.
+    header = html.escape(f"{player_name} | {position} | {current_level}")
     if mlbam_id:
         milb_url = MILB_URL_TEMPLATE.format(mlbam_id=mlbam_id)
         savant_url = SAVANT_URL_TEMPLATE.format(mlbam_id=mlbam_id)
-        header += f' [{MILB_ICON}]({milb_url} "MiLB.com player page")'
-        header += f' [{SAVANT_ICON}]({savant_url} "Prospect Savant player page")'
-    st.subheader(header)
+        header += (
+            f'<a href="{milb_url}" target="_blank" rel="noopener noreferrer" title="MiLB.com player page">'
+            f'<img src="{MILB_LOGO}" alt="MiLB.com" style="{LOGO_STYLE}"></a>'
+            f'<a href="{savant_url}" target="_blank" rel="noopener noreferrer" title="Prospect Savant player page">'
+            f'<img src="{SAVANT_LOGO}" alt="Prospect Savant" style="{SAVANT_LOGO_STYLE}"></a>'
+        )
+    # A markdown h3 (same look as st.subheader) so the logos can be inline HTML.
+    st.markdown(f"### {header}", unsafe_allow_html=True)
     st.caption(f"{team} | Age {age}")
 
     st.markdown("**2026 Stats**")
