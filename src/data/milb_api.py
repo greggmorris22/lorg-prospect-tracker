@@ -19,7 +19,7 @@ import concurrent.futures
 # appeared in a big-league game returns zero results and disappears from
 # the app entirely.
 #   1: MLB, 11: AAA, 12: AA, 13: A+, 14: A, 15: Rk(Complex), 16: DSL,
-#   17: VSL, 21/22/23: independent & winter leagues
+#   17: Winter Leagues (incl. Arizona Fall League), 21/22/23: independent leagues
 SEARCH_SPORT_IDS = "1,11,12,13,14,15,16,17,21,22,23"
 
 # MiLB sport IDs used for stat lookups, and their display level.
@@ -30,9 +30,24 @@ SPORT_ID_TO_LEVEL = {
     14: "A",
     15: "ROOKIE_BALL",
     16: "DSL",
-    17: "VSL",
+    17: "WIN",
 }
 MILB_SPORT_IDS = list(SPORT_ID_TO_LEVEL)
+
+# Sport 17 holds every winter league (Arizona Fall League, LIDOM, LVBP, ...).
+# The Fall League is league 119 within it, so it is picked out by league ID.
+WINTER_SPORT_ID = 17
+AFL_LEAGUE_ID = 119
+
+# Game types requested for every level. "R" is the regular season; the rest are
+# the postseason codes. MiLB uses D/L/W/C depending on the level (the Fall
+# League's championship game is coded W); F is listed in case a wild-card round
+# is ever added.
+#
+# Do not add "P" (generic postseason): it is an umbrella that re-returns every
+# postseason game already covered by D/L/W/C, so each one shows up twice.
+GAME_TYPES = "R,F,D,L,W,C"
+POSTSEASON_GAME_TYPES = {"F", "D", "L", "W", "C"}
 
 # Maps a Fantrax roster level to the MLB sport IDs that represent it. Used as
 # a tiebreaker when two same-named players are in the same organization
@@ -442,7 +457,10 @@ def fetch_game_scores(pk_home_map: dict) -> dict:
             game_state = game.get('status', {}).get('abstractGameState', '')
             if game_state == 'Final':
                 is_winner = home.get('isWinner', False) if is_home else away.get('isWinner', False)
-                prefix = "W " if is_winner else "L "
+                if team_score == opp_score:
+                    prefix = "T "  # Fall League games can end tied
+                else:
+                    prefix = "W " if is_winner else "L "
             else:
                 prefix = ""  # In-progress or not yet final — no W/L
 
@@ -682,6 +700,22 @@ def format_pitching_stats(splits: list, season_stat: dict, scores: dict = None) 
     return season_df, games_df
 
 
+def _is_afl(split: dict) -> bool:
+    """True if a game-log split is from the Arizona Fall League."""
+    return (split.get('league') or {}).get('id') == AFL_LEAGUE_ID
+
+
+def _game_level_label(split: dict, sport_level: str) -> str:
+    """
+    Label for the Lvl column: the level the game was played at, with "AFL" for
+    Fall League games and a " (PS)" suffix on any postseason game.
+    """
+    label = "AFL" if _is_afl(split) else sport_level
+    if split.get('gameType') in POSTSEASON_GAME_TYPES:
+        label += " (PS)"
+    return label
+
+
 def get_milb_stats(player_name: str, player_id: str = None,
                    org: str = None, level: str = None) -> tuple:
     """
@@ -702,7 +736,8 @@ def get_milb_stats(player_name: str, player_id: str = None,
         season_df     -- one-row season-totals DataFrame
         games_df      -- recent-games DataFrame
         current_level -- sport abbreviation of the player's most recent game
-                         (e.g., "AAA", "AA", "A+", "A", "Rk")
+                         (e.g., "AAA", "AA", "A+", "A", "Rk"), or "AFL" if
+                         that game was in the Arizona Fall League
         team          -- player's current team full name
         age           -- player's current age
         position      -- player's primary position abbreviation
@@ -747,11 +782,15 @@ def get_milb_stats(player_name: str, player_id: str = None,
     sport_ids = MILB_SPORT_IDS
 
     def fetch_level(sid):
-        """Fetch game log and season stats for one sport level."""
+        """
+        Fetch game log and season stats for one sport level, regular season
+        and postseason together. The season block comes back as one entry per
+        game type, which is how the season totals are kept regular-season only.
+        """
         url = (
             f"https://statsapi.mlb.com/api/v1/people/{player_id}/stats"
             f"?stats=gameLog,season&group={group}&season={year}"
-            f"&gameType=R&sportId={sid}"
+            f"&gameType={GAME_TYPES}&sportId={sid}"
         )
         return fetch_stats(url)
 
@@ -769,10 +808,18 @@ def get_milb_stats(player_name: str, player_id: str = None,
                     if stat_block['type']['displayName'] == 'gameLog' and stat_block.get('splits'):
                         # Attach level to each game split so we know which minor league level it's from
                         for split in stat_block['splits']:
-                            split['minorLeagueLevel'] = level
+                            split['minorLeagueLevel'] = _game_level_label(split, level)
                         all_splits.extend(stat_block['splits'])
                     elif stat_block['type']['displayName'] == 'season' and stat_block.get('splits'):
-                        new_stat = stat_block['splits'][0].get('stat', {})
+                        # Season totals stay regular-season only; postseason
+                        # and Fall League games appear in Recent Games instead.
+                        regular = next(
+                            (s for s in stat_block['splits'] if s.get('gameType') == 'R'),
+                            None,
+                        )
+                        if regular is None:
+                            continue
+                        new_stat = regular.get('stat', {})
                         if (new_stat.get('atBats', 0) > best_season_stat.get('atBats', 0)
                                 or new_stat.get('inningsPitched', '0.0')
                                     > best_season_stat.get('inningsPitched', '0.0')):
@@ -784,8 +831,20 @@ def get_milb_stats(player_name: str, player_id: str = None,
     # Determine the player's current level and team from their most recent game.
     # Do this before the format functions sort the list.
     all_splits.sort(key=lambda x: x['date'], reverse=True)
-    current_level = all_splits[0].get('sport', {}).get('abbreviation', 'UNK')
-    current_team_id = all_splits[0].get('team', {}).get('id')
+    if _is_afl(all_splits[0]):
+        current_level = "AFL"
+    else:
+        current_level = all_splits[0].get('sport', {}).get('abbreviation', 'UNK')
+
+    # The parent MLB org comes from the most recent game outside the winter
+    # leagues. Fall League clubs are run by the Commissioner's office, so
+    # looking up their parent would replace the player's real org in the
+    # caption with "Office of the Commissioner".
+    org_split = next(
+        (s for s in all_splits if s.get('sport', {}).get('id') != WINTER_SPORT_ID),
+        None,
+    )
+    current_team_id = org_split.get('team', {}).get('id') if org_split else None
 
     # Build a gamePk -> isHome map for all unique games.
     pk_home_map = {}
@@ -798,9 +857,11 @@ def get_milb_stats(player_name: str, player_id: str = None,
     # run concurrently so neither has to wait on the other.
     with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
         scores_future  = executor.submit(fetch_game_scores, pk_home_map)
-        org_future     = executor.submit(fetch_parent_org, current_team_id)
+        org_future     = (executor.submit(fetch_parent_org, current_team_id)
+                          if current_team_id else None)
         scores = scores_future.result()
-        team   = org_future.result()  # replaces whatever the profile returned
+        if org_future:
+            team = org_future.result()  # replaces whatever the profile returned
 
     if p_info['is_pitcher']:
         season_df, games_df = format_pitching_stats(all_splits, best_season_stat, scores)

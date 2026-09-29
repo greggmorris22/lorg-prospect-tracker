@@ -11,7 +11,11 @@ from data.milb_api import get_milb_stats
 st.set_page_config(page_title="LORG Prospect Tracker", layout="wide")
 
 st.title("LORG Prospect Tracker")
-st.markdown("Select a team to view the last 7 minor league game logs and 2026 season stats YTD for all their prospects.")
+st.markdown(
+    "Select a team to view the last 7 minor league game logs and 2026 season stats YTD for all their prospects. "
+    "Game logs include Arizona Fall League games (AFL) and postseason games, marked (PS); "
+    "season stats are regular season only."
+)
 
 @st.cache_data(ttl=3600)  # Cache for an hour to avoid spamming the endpoint
 def load_teams(league_id):
@@ -55,10 +59,10 @@ if not teams_data:
     st.error("No teams were found in the league.")
     st.stop()
 
-# Team selector — uses st.radio instead of st.selectbox so that no text
-# input is rendered. st.selectbox puts a focusable <input> on screen which
-# triggers the iOS soft keyboard; radio buttons are pure tap targets with
-# no keyboard involvement on any device.
+# Team selector — a dropdown so the 13 options don't stack down the page.
+# (This was a st.radio to avoid st.selectbox's focusable <input>, which can
+# raise the iOS soft keyboard; if that comes back on iPhone, switch to
+# st.pills or st.radio(horizontal=True).)
 #
 # "Gregg's Watch List" is injected at the end as a first-class team option.
 # It prompts for a password before revealing any player names.
@@ -72,7 +76,7 @@ for i, name in enumerate(team_names):
         default_idx = i
         break
 
-selected_team = st.radio("Select Team:", options=team_names, index=default_idx)
+selected_team = st.selectbox("Select Team:", options=team_names, index=default_idx)
 
 
 def render_player(player_name: str, result: tuple):
